@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PixLens Concave Simulator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Inter', sans-serif;
+        }
+        #canvas-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 10;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 2rem;
+        }
+        .interactive {
+            pointer-events: auto;
+        }
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #ffffff;
+            cursor: pointer;
+            margin-top: -6px;
+            box-shadow: 0 0 10px rgba(255,255,255,0.5);
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+        }
+        #loading-screen {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #000;
+            color: white;
+            z-index: 50;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            transition: opacity 0.5s;
+        }
+        .spinner {
+            border: 3px solid rgba(255,255,255,0.1);
+            border-top: 3px solid #fff;
+            border-radius: 50%;
+            width: 40px; height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="loading-screen">
+        <div class="spinner mb-4"></div>
+        <h2 class="text-xl font-bold tracking-widest text-white">ACCESSING CAMERA</h2>
+    </div>
+
+    <!-- UI Overlay -->
+    <div id="ui-layer">
+        <div class="text-center w-full">
+            <h1 class="text-white text-4xl font-black tracking-widest">PIXLENS</h1>
+            <p class="text-gray-400 text-sm font-medium tracking-widest mt-1">CONCAVE CUBE SIMULATOR</p>
+        </div>
+
+        <div class="interactive bg-white/5 backdrop-blur-md rounded-2xl p-6 max-w-sm mx-auto w-full border border-white/10">
+            <div class="mb-2">
+                <div class="flex justify-between text-white text-xs font-bold mb-3 tracking-widest">
+                    <label>PIXEL SIZE</label>
+                    <span id="pixel-val">30</span>
+                </div>
+                <input type="range" id="pixel-slider" min="10" max="100" value="30">
+            </div>
+            <p class="text-center text-gray-500 text-xs mt-5">Drag to rotate • Scroll to zoom</p>
+        </div>
+    </div>
+
+    <!-- Video Element -->
+    <video id="webcam" autoplay playsinline style="display: none;"></video>
+    
+    <!-- Canvas Container -->
+    <div id="canvas-container"></div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        let scene, camera, renderer, controls;
+        let videoTexture, prismMesh, uniforms;
+        
+        const video = document.getElementById('webcam');
+        const container = document.getElementById('canvas-container');
+        const loadingScreen = document.getElementById('loading-screen');
+        const pixelSlider = document.getElementById('pixel-slider');
+
+        async function init() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } } 
+                });
+                video.srcObject = stream;
+                video.play();
+
+                video.addEventListener('loadeddata', () => {
+                    loadingScreen.style.opacity = '0';
+                    setTimeout(() => loadingScreen.style.display = 'none', 500);
+                    setupThreeJS();
+                    animate();
+                });
+            } catch (err) {
+                loadingScreen.innerHTML = `
+                    <div class="text-red-500 text-center">
+                        <h2 class="text-xl font-bold mb-2">Camera Access Denied</h2>
+                        <p class="text-sm">Please allow camera access to use this application.</p>
+                    </div>
+                `;
+            }
+        }
+
+        function setupThreeJS() {
+            scene = new THREE.Scene();
+            // Solid black background
+            scene.background = new THREE.Color(0x000000);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 0, 6);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            container.appendChild(renderer.domElement);
+
+            // OrbitControls for free rotation
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            // Video Texture
+            videoTexture = new THREE.VideoTexture(video);
+            videoTexture.minFilter = THREE.LinearFilter;
+            videoTexture.magFilter = THREE.LinearFilter;
+            videoTexture.colorSpace = THREE.SRGBColorSpace;
+
+            const size = 2; // Width, Height, Depth
+            const shape = new THREE.Shape();
+            
+            // Draw a square on X-Y plane, but the top edge is curved inwards
+            shape.moveTo(-size/2, -size/2); // Bottom Left (-1, -1)
+            shape.lineTo(size/2, -size/2);  // Bottom Right (1, -1)
+            shape.lineTo(size/2, size/2);   // Top Right (1, 1)
+            
+            // Curve from Top Right to Top Left, dipping down to Y=0 (creating the concave lens)
+            shape.quadraticCurveTo(0, 0, -size/2, size/2); 
+            
+            shape.lineTo(-size/2, -size/2); // Back to Bottom Left
+
+            // Extrude with depth = width (size) to make the bounding box a cube
+            const extrudeSettings = { 
+                depth: size, 
+                bevelEnabled: true, 
+                bevelSegments: 5, 
+                steps: 1, 
+                bevelSize: 0.05, 
+                bevelThickness: 0.05 
+            };
+            const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+            
+            // Center the geometry around origin
+            geometry.center();
+
+            // The curved face is currently facing +Y. 
+            // Rotate it so the curved face points directly to +Z (towards the user)
+            geometry.rotateX(Math.PI / 2);
+
+            uniforms = {
+                tVideo: { value: videoTexture },
+                resolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+                videoResolution: { value: new THREE.Vector2(video.videoWidth, video.videoHeight) },
+                pixelSize: { value: parseFloat(pixelSlider.value) }
+            };
+
+            const material = new THREE.ShaderMaterial({
+                uniforms: uniforms,
+                transparent: true,
+                vertexShader: `
+                    varying vec3 vNormal;
+                    varying vec3 vWorldPosition;
+                    varying vec4 vScreenPos;
+
+                    void main() {
+                        vNormal = normalize(normalMatrix * normal);
+                        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+                        vWorldPosition = worldPos.xyz;
+                        // Calculate screen coordinates for refraction mapping
+                        vScreenPos = projectionMatrix * viewMatrix * worldPos;
+                        gl_Position = vScreenPos;
+                    }
+                `,
+                fragmentShader: `
+                    uniform sampler2D tVideo;
+                    uniform vec2 resolution;
+                    uniform vec2 videoResolution;
+                    uniform float pixelSize;
+
+                    varying vec3 vNormal;
+                    varying vec3 vWorldPosition;
+                    varying vec4 vScreenPos;
+
+                    void main() {
+                        // Normalized Screen UVs (0.0 to 1.0)
+                        vec2 screenUV = (vScreenPos.xy / vScreenPos.w) * 0.5 + 0.5;
+
+                        // Calculate View Direction
+                        vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+
+                        // 1. Refraction: offset UV based on the surface normal
+                        vec2 refractionOffset = vNormal.xy * 0.15; 
+                        vec2 refractedUV = screenUV - refractionOffset;
+
+                        // 2. Pixelation Grid
+                        vec2 pSize = vec2(pixelSize) / resolution;
+                        vec2 snappedUV = floor(refractedUV / pSize) * pSize;
+
+                        // 3. Aspect Ratio Cover Mapping (Prevents video stretching)
+                        vec2 s = resolution;
+                        vec2 i = videoResolution;
+                        float rs = s.x / s.y;
+                        float ri = i.x / i.y;
+                        vec2 newRes = rs < ri ? vec2(i.x * s.y / i.y, s.y) : vec2(s.x, i.y * s.x / i.x);
+                        vec2 offset = (rs < ri ? vec2((newRes.x - s.x) / 2.0, 0.0) : vec2(0.0, (newRes.y - s.y) / 2.0)) / newRes;
+                        vec2 finalUV = snappedUV * s / newRes + offset;
+                        
+                        // Mirror the camera
+                        finalUV.x = 1.0 - finalUV.x;
+
+                        // Sample Webcam Texture
+                        vec3 texColor = texture2D(tVideo, clamp(finalUV, 0.0, 1.0)).rgb;
+
+                        // 4. Lighting & Edges (Glass Effect against black background)
+                        // Fresnel Effect to highlight the edges of the cube
+                        float fresnel = pow(1.0 - max(dot(viewDir, vNormal), 0.0), 2.5);
+                        
+                        // Fake rim light / Specular highlight
+                        vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0));
+                        vec3 halfVector = normalize(lightDir + viewDir);
+                        float specular = pow(max(dot(vNormal, halfVector), 0.0), 32.0);
+
+                        // Combine texture with glass edge lighting
+                        vec3 rimColor = vec3(1.0, 1.0, 1.0); // White edges
+                        vec3 finalColor = mix(texColor, rimColor, fresnel * 0.4);
+                        finalColor += vec3(specular) * 0.5;
+
+                        gl_FragColor = vec4(finalColor, 1.0);
+                    }
+                `
+            });
+
+            prismMesh = new THREE.Mesh(geometry, material);
+            scene.add(prismMesh);
+
+            window.addEventListener('resize', onWindowResize);
+            
+            pixelSlider.addEventListener('input', (e) => {
+                const val = e.target.value;
+                document.getElementById('pixel-val').innerText = val;
+                uniforms.pixelSize.value = parseFloat(val);
+            });
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            if (uniforms) {
+                uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update(); // Update OrbitControls damping
+            renderer.render(scene, camera);
+        }
+
+        // Start app
+        init();
+    </script>
+</body>
+</html>
